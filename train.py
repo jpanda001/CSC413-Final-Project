@@ -13,59 +13,59 @@ from glob import glob
 from tqdm import tqdm
 
 import model.model as M
-from dataset.batch_data_generator import DataGenerator
-import metrics.mAP as mAP
+from data.batch_generator import DataGenerator
+import metric.AP as mAP
 
-import util.loader as loader
-import util.helper as helper
-import util.drawer as drawer
+import utilities.loader as loader
+import utilities.helper as helper
+import utilities.drawer as drawer
 
 
 def main():
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if len(gpus) > 0:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+    gpu = tf.config.experimental.list_physical_devices('GPU')
+    if len(gpu) > 0:
+        for hardware in gpu:
+            tf.config.experimental.set_memory_growth(hardware, True)
+        logical_gpu = tf.config.experimental.list_logical_devices('GPU')
+        print(len(gpu), "Physical GPUs,", len(logical_gpu), "Logical GPUs")
 
-    config = loader.readConfig()
-    config_data = config["DATA"]
-    config_radar = config["RADAR_CONFIGURATION"]
-    config_model = config["MODEL"]
-    config_train = config["TRAIN"]
+    config_setup = loader.loadConfig()
+    data_configuration = config_setup["DATA"]
+    radar_configuration = config_setup["RADAR_CONFIGURATION"]
+    model_configuration = config_setup["MODEL"]
+    training_configuration = config_setup["TRAIN"]
 
-    anchor_boxes = loader.readAnchorBoxes() # load anchor boxes with order
-    num_classes = len(config_data["all_classes"])
+    anchor_boxes = loader.loadAnchorBoxes() # load anchor boxes with order
+    num_classes = len(data_configuration["all_classes"])
 
     # Using the yolo head shape out from model for data generator
-    model = M.RadarYOLO(config_model, config_data, config_train, anchor_boxes)
-    model.build([None] + config_model["input_shape"])
+    model = M.RadarYOLO(model_configuration, data_configuration, training_configuration, anchor_boxes)
+    model.build([None] + model_configuration["input_shape"])
     model.summary()
 
     # Preparing data 
-    data_generator = DataGenerator(config_data, config_train, config_model, \
+    data_generator = DataGenerator(data_configuration, training_configuration, model_configuration, \
                                 model.features_shape, anchor_boxes)
     train_generator = data_generator.trainGenerator()
     validate_generator = data_generator.validateGenerator()
 
     # Training settings #
-    logdir = os.path.join(config_train["log_dir"], \
-                        "b_" + str(config_train["batch_size"]) + \
-                        "lr_" + str(config_train["learningrate_init"]))
+    logdir = os.path.join(training_configuration["log_dir"], \
+                        "b_" + str(training_configuration["batch_size"]) + \
+                        "lr_" + str(training_configuration["learningrate_init"]))
     if not os.path.exists(logdir):
         os.makedirs(logdir)
     global_steps = tf.Variable(1, trainable=False, dtype=tf.int64)
-    optimizer = K.optimizers.Adam(learning_rate=config_train["learningrate_init"])
+    optimizer = K.optimizers.Adam(learning_rate=training_configuration["learningrate_init"])
     writer = tf.summary.create_file_writer(logdir)
     ckpt = tf.train.Checkpoint(optimizer=optimizer, model=model, step=global_steps)
     log_specific_dir = os.path.join(logdir, "ckpt")
-    manager = tf.train.CheckpointManager(ckpt, log_specific_dir, max_to_keep=3)
+    ckpt_manager = tf.train.CheckpointManager(ckpt, log_specific_dir, max_to_keep=3)
 
     # Restore from last checkpoint
-    ckpt.restore(manager.latest_checkpoint)
-    if manager.latest_checkpoint:
-        print("Restored from {}".format(manager.latest_checkpoint))
+    ckpt.restore(ckpt_manager.latest_checkpoint)
+    if ckpt_manager.latest_checkpoint:
+        print("Restored from {}".format(ckpt_manager.latest_checkpoint))
         global_steps.assign(ckpt.step.numpy())
 
     # Define training step
@@ -74,19 +74,11 @@ def main():
         """ define train step for training """
         with tf.GradientTape() as tape:
             feature = model(data)
-            pred_raw, pred = model.decodeYolo(feature)
+            pred_raw, pred = model.YOLODecoder(feature)
             total_loss, box_loss, conf_loss, category_loss = \
                 model.loss(pred_raw, pred, label, raw_boxes[..., :6])
             gradients = tape.gradient(total_loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            ### NOTE: writing summary data ###
-            with writer.as_default():
-                tf.summary.scalar("lr", optimizer.lr, step=global_steps)
-                tf.summary.scalar("loss/total_loss", total_loss, step=global_steps)
-                tf.summary.scalar("loss/box_loss", box_loss, step=global_steps)
-                tf.summary.scalar("loss/conf_loss", conf_loss, step=global_steps)
-                tf.summary.scalar("loss/category_loss", category_loss, step=global_steps)
-            writer.flush()
         return total_loss, box_loss, conf_loss, category_loss
  
     # Define validate step
@@ -114,13 +106,13 @@ def main():
             for batch_id in range(raw_boxes.shape[0]):
                 raw_boxes_frame = raw_boxes[batch_id]
                 pred_frame = pred[batch_id]
-                predicitons = helper.yoloheadToPredictions(pred_frame, \
-                                    conf_threshold=config_model["confidence_threshold"])
-                nms_pred = helper.nms(predicitons, config_model["nms_iou3d_threshold"], \
-                                config_model["input_shape"], sigma=0.3, method="nms")
+                predicitons = helper.yoloheadPredictor(pred_frame, \
+                                    conf_threshold=model_configuration["confidence_threshold"])
+                nms_pred = helper.nms(predicitons, model_configuration["nms_iou3d_threshold"], \
+                                model_configuration["input_shape"], sigma=0.3, method="nms")
                 mean_ap, ap_all_class = mAP.mAP(nms_pred, raw_boxes_frame.numpy(), \
-                                        config_model["input_shape"], ap_all_class, \
-                                        tp_iou_threshold=config_model["mAP_iou3d_threshold"])
+                                        model_configuration["input_shape"], ap_all_class, \
+                                        tp_iou_threshold=model_configuration["mAP_iou3d_threshold"])
                 mean_ap_test += mean_ap
         for ap_class_i in ap_all_class:
             if len(ap_class_i) == 0:
@@ -160,25 +152,24 @@ def main():
                 conf_loss, category_loss))
         ### NOTE: learning rate decay ###
         global_steps.assign_add(1)
-        if global_steps < config_train["warmup_steps"]:
-            # lr = config_train["learningrate_init"]
-            if global_steps < config_train["startup_steps"]:
-                lr = config_train["learningrate_startup"]
+        if global_steps < training_configuration["warmup_steps"]:
+            if global_steps < training_configuration["startup_steps"]:
+                lr = training_configuration["learningrate_startup"]
             else:
-                lr = config_train["learningrate_init"]
+                lr = training_configuration["learningrate_init"]
             optimizer.lr.assign(lr)
-        elif global_steps % config_train["learningrate_decay_gap"] == 0:
+        elif global_steps % training_configuration["learningrate_decay_gap"] == 0:
             lr = optimizer.lr.numpy()
-            lr = config_train["learningrate_end"] + \
-                    config_train["learningrate_decay"] * \
-                    (lr - config_train["learningrate_end"])
+            lr = training_configuration["learningrate_end"] + \
+                    training_configuration["learningrate_decay"] * \
+                    (lr - training_configuration["learningrate_end"])
             optimizer.lr.assign(lr)
  
         ###---------------------------- VALIDATE SET -------------------------###
-        if global_steps.numpy() >= config_train["validate_start_steps"] and \
-                global_steps.numpy() % config_train["validate_gap"] == 0:
+        if global_steps.numpy() >= training_configuration["validate_start_steps"] and \
+                global_steps.numpy() % training_configuration["validate_gap"] == 0:
             validate_step()
-            save_path = manager.save()
+            save_path = ckpt_manager.save()
             print("Saved checkpoint for step {}: {}".format(int(ckpt.step), save_path))
 
 
