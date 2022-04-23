@@ -1,3 +1,4 @@
+from cv2 import repeat
 import tensorflow as tf
 import tensorflow.keras as K
 import model.layers as L
@@ -17,7 +18,7 @@ def residualBlock(input_features, channel_expansion, strides=(1,1), use_bias=Fal
     convOut += input_features
     return convOut
 
-def mainBlock(input_features, repeats=0, layerStructure):
+def mainBlock(input_features, repeats, layerStructure):
     """ Iterative block """
     """ 
     Residual blocks; 
@@ -44,6 +45,7 @@ def ResNet(input):
     convOut = input
     ##### repeating and combining residual blocks ######
     for i in range(len(networkStructure)):
+        repeats = networkStructure[i][0]
         strides = [1, 1] * int(networkStructure[i][0]/2) # [1, 1, 1, 1] 
         expansions = strides
         

@@ -9,7 +9,7 @@ def singleLayerHead(input_features, num_anchors, num_classes, grid_depth):
     """ YOLO HEAD for one specific feature stage"""
 
     # 7 items because [x_center, y_center, z_Center, w, h ,d, objectness]
-    output_channels = grid_depth * num_anchors * (num_classes + 7))
+    output_channels = grid_depth * num_anchors * (num_classes + 7)
     output_shape = [-1] + list(input_features.shape[1:-1]) + \
                         [int(grid_depth), int(num_anchors) * (num_classes + 7)]
     
