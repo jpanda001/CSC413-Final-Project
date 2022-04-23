@@ -1,0 +1,6 @@
+tensorflow==2.8.0
+opencv-python==4.2
+numpy
+matplotlib
+scikit-learn
+tqdm
